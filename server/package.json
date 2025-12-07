@@ -1,0 +1,9 @@
+{
+    "name": "server",
+    "type": "module",
+    "main": "index.ts",
+    "dependencies": {
+        "@types/express": "^5.0.6",
+        "express": "^5.2.1"
+    }
+}

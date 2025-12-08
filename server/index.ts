@@ -8,13 +8,19 @@ import { program } from "commander";
 program
   .option(
     "--detections-timeout <seconds>",
-    "Timeout in seconds to clear detections after inactivity",
+    "Timeout in seconds to clear detections after detection inactivity",
+    "10",
+  )
+  .option(
+    "--status-timeout <seconds>",
+    "Timeout in seconds to clear detections after AC unit inactivity",
     "10",
   )
   .parse();
 
 const options = program.opts();
 const detectionsTimeout = parseFloat(options.detectionsTimeout) * 1000; // Convert to milliseconds
+const statusTimeout = parseFloat(options.statusTimeout) * 1000; // Convert to milliseconds
 
 const app = express();
 const PORT = 3000;
@@ -53,6 +59,15 @@ function normalizeFilenameComponent(name: string) {
   return name.replace(/[^a-z0-9_\-]/gi, "_");
 }
 
+function toFixed(digits: number = 2) {
+  return (key: string, value: any) => {
+    if (typeof value === "number" && !Number.isInteger(value)) {
+      return parseFloat(value.toFixed(digits));
+    }
+    return value;
+  };
+}
+
 const VAR = path.resolve("var");
 ensureDir(VAR);
 
@@ -63,7 +78,6 @@ let domains: Record<string, number> = {};
 
 // Status for each domain
 type Status = {
-  population: number;
   fan_power?: number;
   temperature?: number;
   humidity?: number;
@@ -71,6 +85,22 @@ type Status = {
 };
 
 const status: Map<string, Status> = new Map();
+const status_clear_handles: Map<string, NodeJS.Timeout> = new Map();
+
+function updateStatus(domain: string, s: Status) {
+  status.set(domain, s);
+  // Clear previous timeout if any
+  if (status_clear_handles.has(domain))
+    clearTimeout(status_clear_handles.get(domain)!);
+  // Set timeout to clear status after 60 seconds of inactivity
+  status_clear_handles.set(
+    domain,
+    setTimeout(() => {
+      status.delete(domain);
+      status_clear_handles.delete(domain);
+    }, statusTimeout),
+  );
+}
 
 // Timeout handle for clearing detections
 let detectionsTimeoutHandle: NodeJS.Timeout | null = null;
@@ -105,15 +135,6 @@ app.post("/detections", (req, res) => {
       return;
     }
     domains = detections;
-
-    // Remove status entries for domains not in detections
-    const domainNames = new Set(Object.keys(domains));
-    for (const domain of status.keys()) {
-      if (!domainNames.has(domain)) {
-        status.delete(domain);
-      }
-    }
-
     resetDetectionsTimeout(); // Reset timeout on new detections
     res.status(200).end();
   } else {
@@ -148,8 +169,7 @@ app.post("/unit/:domain", (req, res) => {
     res.type("application/octet-stream").send(responseBuffer);
 
     // Update status for this domain
-    status.set(domain, {
-      population,
+    updateStatus(domain, {
       fan_power: power,
       temperature,
       humidity,
@@ -172,7 +192,10 @@ app.post("/unit/:domain", (req, res) => {
     );
     const line = [
       timestamp.toString(),
-      JSON.stringify({ temperature, humidity, fan_rpm, population }),
+      JSON.stringify(
+        { temperature, humidity, fan_rpm, population },
+        toFixed(2),
+      ),
     ].join(",");
     fs.appendFile(db, line + "\n", (err) => {
       if (err) {
@@ -187,24 +210,18 @@ app.post("/unit/:domain", (req, res) => {
 });
 
 app.get("/status", (req, res) => {
-  // Convert Map to Record for JSON response
-  const statusRecord: Record<string, Status> = {};
-
-  // Include all domains from detections
-  for (const domain of Object.keys(domains)) {
-    if (status.has(domain)) {
-      // Use existing status if available
-      statusRecord[domain] = status.get(domain)!;
-    } else {
-      // Fill with NaN for unknown fields
-      const population = domains[domain];
-      statusRecord[domain] = {
-        population,
-      };
-    }
-  }
-
-  res.json(statusRecord);
+  const keys = new Set([...status.keys(), ...Object.keys(domains)].sort());
+  res.json(
+    Object.fromEntries(
+      [...keys].map((k) => [
+        k,
+        {
+          ...(status.get(k) ?? {}),
+          ...(k in domains ? { population: domains[k] } : {}),
+        },
+      ]),
+    ),
+  );
 });
 
 app.get("/history/:domain", (req, res) => {
@@ -255,25 +272,20 @@ app.get("/history/:domain", (req, res) => {
 
     for (const line of lines) {
       if (!line) continue;
-
       try {
         const parts = line.split(",");
         if (parts.length >= 2) {
           const timestamp = parseFloat(parts[0]); // Parse as numeric timestamp
           const time = timestamp / 1000; // Convert milliseconds to seconds
-
           // Check if line is within time range
           if (start !== undefined && time < start) continue;
           if (time > end) continue;
-
           // Track first matching line
           if (firstMatchingLine === null) {
             firstMatchingLine = line;
           }
-
           // Track last matching line
           lastMatchingLine = line;
-
           // Check if we should include this line based on step interval
           if (time - lastTime >= step) {
             result.push(line);
@@ -285,24 +297,19 @@ app.get("/history/:domain", (req, res) => {
         continue;
       }
     }
-
     // Ensure first and last matching lines are always included
     const finalResult: string[] = [];
-
     if (firstMatchingLine !== null) {
       finalResult.push(firstMatchingLine);
     }
-
     for (const line of result) {
       if (line !== firstMatchingLine && line !== lastMatchingLine) {
         finalResult.push(line);
       }
     }
-
     if (lastMatchingLine !== null && lastMatchingLine !== firstMatchingLine) {
       finalResult.push(lastMatchingLine);
     }
-
     res.type("text/plain").send(finalResult.join("\n"));
   } catch (error) {
     console.error(`Error reading history for domain ${domain}:`, error);

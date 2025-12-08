@@ -3,6 +3,7 @@
 #include <cmath>
 #include <global.h>
 
+#include <ESP32Ping.h>
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -70,9 +71,12 @@ void consoleTask(void *parameter) {
                 "  wifi status          - Show WiFi connection status\n"
                 "  wifi ssid [value]    - Get/set WiFi SSID\n"
                 "  wifi passwd [value]  - Get/set WiFi password\n"
+                "  dns [ip1] [ip2]      - Set custom DNS servers (e.g., 8.8.8.8 8.8.4.4)\n"
                 "  server [url]         - Get/set server URL\n"
                 "  status               - Show sensor and fan status\n"
                 "  fan [speed]          - Get/set fan speed (0.0-1.0)\n"
+                "  dig [hostname]       - Perform DNS lookup\n"
+                "  ping [host]          - Ping an IP address or hostname\n"
                 "  reset                - Wipe all settings and reboot");
           } else if (current_input == "wifi status") {
             Serial.print("WiFi Status: ");
@@ -136,6 +140,39 @@ void consoleTask(void *parameter) {
                 Serial.println("Password not set");
               }
             }
+          } else if (current_input.startsWith("dns")) {
+            String arg = current_input.substring(3);
+            arg.trim();
+            if (arg.length() > 0) {
+              // Parse two IP addresses
+              int spacePos = arg.indexOf(' ');
+              IPAddress dns1, dns2;
+              if (spacePos > 0) {
+                String ip1Str = arg.substring(0, spacePos);
+                String ip2Str = arg.substring(spacePos + 1);
+                if (dns1.fromString(ip1Str) && dns2.fromString(ip2Str)) {
+                  WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+                  Serial.print("DNS servers set to: ");
+                  Serial.print(dns1);
+                  Serial.print(" and ");
+                  Serial.println(dns2);
+                } else {
+                  Serial.println("Invalid IP addresses");
+                }
+              } else if (dns1.fromString(arg)) {
+                WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1);
+                Serial.print("Primary DNS server set to: ");
+                Serial.println(dns1);
+              } else {
+                Serial.println("Invalid IP address");
+              }
+            } else {
+              Serial.print("Current DNS Server 1: ");
+              Serial.println(WiFi.dnsIP(0));
+              Serial.print("Current DNS Server 2: ");
+              Serial.println(WiFi.dnsIP(1));
+              Serial.println("Usage: dns [ip1] [ip2]");
+            }
           } else if (current_input.startsWith("server")) {
             String arg = current_input.substring(6);
             arg.trim();
@@ -185,6 +222,89 @@ void consoleTask(void *parameter) {
                 Serial.print(power * 100.0f);
                 Serial.println("%");
               }
+            }
+          } else if (current_input.startsWith("dig")) {
+            String arg = current_input.substring(3);
+            arg.trim();
+            if (arg.length() > 0) {
+              if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("Error: WiFi not connected");
+              } else {
+                // Display current DNS servers
+                Serial.print("DNS Server 1: ");
+                Serial.println(WiFi.dnsIP(0));
+                Serial.print("DNS Server 2: ");
+                Serial.println(WiFi.dnsIP(1));
+                Serial.flush();
+                
+                IPAddress ip;
+                Serial.print("Looking up: ");
+                Serial.println(arg);
+                Serial.flush();
+                
+                // Try DNS lookup
+                unsigned long startTime = millis();
+                bool success = WiFi.hostByName(arg.c_str(), ip);
+                unsigned long elapsed = millis() - startTime;
+                
+                Serial.flush();
+                if (success) {
+                  Serial.print("IP Address: ");
+                  Serial.println(ip);
+                  Serial.print("Query time: ");
+                  Serial.print(elapsed);
+                  Serial.println(" ms");
+                } else {
+                  Serial.print("DNS lookup failed after ");
+                  Serial.print(elapsed);
+                  Serial.println(" ms");
+                  Serial.println("Try: wifi status (to check connection)");
+                }
+                Serial.flush();
+              }
+            } else {
+              Serial.println("Usage: dig [hostname]");
+            }
+          } else if (current_input.startsWith("ping")) {
+            String arg = current_input.substring(4);
+            arg.trim();
+            if (arg.length() > 0) {
+              if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("Error: WiFi not connected");
+              } else {
+                IPAddress ip;
+                // Try to parse as IP address first
+                if (ip.fromString(arg)) {
+                  Serial.print("Pinging ");
+                  Serial.print(arg);
+                  Serial.println("...");
+                } else {
+                  // It's a hostname, resolve it first
+                  Serial.print("Resolving ");
+                  Serial.print(arg);
+                  Serial.println("...");
+                  if (WiFi.hostByName(arg.c_str(), ip)) {
+                    Serial.print("Resolved to: ");
+                    Serial.println(ip);
+                  } else {
+                    Serial.println("DNS lookup failed");
+                    Serial.print("> ");
+                    continue;
+                  }
+                }
+                // Perform ping
+                if (Ping.ping(ip, 4)) {
+                  Serial.print("Reply from ");
+                  Serial.print(ip);
+                  Serial.print(": time=");
+                  Serial.print(Ping.averageTime());
+                  Serial.println(" ms");
+                } else {
+                  Serial.println("Ping failed: No response");
+                }
+              }
+            } else {
+              Serial.println("Usage: ping [host]");
             }
           } else if (current_input == "reset") {
             Serial.println("Wiping all preferences...");

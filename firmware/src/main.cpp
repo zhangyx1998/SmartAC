@@ -31,6 +31,7 @@ float setFanPower(float power) {
       power = 0.0f;
     if (power > 1.0f)
       power = 1.0f;
+    fan_power = power;
   }
   analogWrite(FAN_PWM, (uint8_t)(power * 255));
   return power;
@@ -129,7 +130,7 @@ void setup() {
 void loop() {
   static float current_hue = 0.0f; // Current hue for smooth transition
   static unsigned long last_update = millis();
-  static float brightness;
+  static float brightness = 1.0f;
   static unsigned long last_blink = millis();
 
   unsigned long now = millis();

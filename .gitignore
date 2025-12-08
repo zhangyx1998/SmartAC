@@ -10,6 +10,9 @@ __pycache__/
 *.log
 *.tmp
 *.pt
+vision/*.yaml
+vision/*.yml
+vision/*.json
 
 node_modules/
 build/

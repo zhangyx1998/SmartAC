@@ -43,7 +43,7 @@ onUnmounted(() => {
           :status="domainStatus"
         />
         <div v-if="Object.keys(status).length === 0" class="no-data">
-          No data available
+          No Data Available
         </div>
       </div>
     </div>
@@ -116,10 +116,12 @@ onUnmounted(() => {
 }
 
 .no-data {
-  grid-column: 1 / -1;
   text-align: center;
-  padding: 3rem;
-  font-size: 1.2rem;
-  color: #666;
+  margin-top: calc(50vh - 6rem);
+  padding: 0;
+  font-size: 3rem;
+  color: #444;
+  user-select: none;
+  font-weight: 600;
 }
 </style>

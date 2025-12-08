@@ -239,7 +239,7 @@ app.get("/history/:domain", (req, res) => {
   );
 
   if (!fs.existsSync(logFile)) {
-    res.json([]);
+    res.status(404).send("Domain not exist");
     return;
   }
 

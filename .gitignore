@@ -16,7 +16,7 @@ vision/*.json
 
 node_modules/
 build/
-dist/
+.dist/
 
 compile_commands.json
 package-lock.json

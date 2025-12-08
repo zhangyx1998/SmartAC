@@ -56,7 +56,7 @@ function normalizeFilenameComponent(name: string) {
 const VAR = path.resolve("var");
 ensureDir(VAR);
 
-const STATIC = path.resolve("static");
+const STATIC = path.resolve(".dist");
 
 // Record of current population density per domain
 let domains: Record<string, number> = {};

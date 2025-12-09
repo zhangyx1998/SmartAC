@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, watch } from "vue";
 import Layout from "./components/Layout.vue";
 import { Chart } from "vue-chartjs";
 import { createToastInterface, POSITION } from "vue-toastification";
 import "vue-toastification/dist/index.css";
 import {
   Chart as ChartJS,
-  CategoryScale,
+  TimeScale,
   LinearScale,
   PointElement,
   LineElement,
@@ -16,11 +16,13 @@ import {
   Title,
   Tooltip,
   Legend,
+  ChartOptions,
 } from "chart.js";
+import "chartjs-adapter-date-fns";
 
 // Register Chart.js components
 ChartJS.register(
-  CategoryScale,
+  TimeScale,
   LinearScale,
   PointElement,
   LineElement,
@@ -34,7 +36,7 @@ ChartJS.register(
 
 const toast = createToastInterface({
   position: POSITION.BOTTOM_RIGHT,
-  timeout: 5000,
+  timeout: 2000,
   closeOnClick: false,
   pauseOnFocusLoss: true,
   pauseOnHover: true,
@@ -49,14 +51,33 @@ const toast = createToastInterface({
   newestOnTop: true,
 });
 
-function formatDateTimeLocal(timestamp: string): string {
-  const date = new Date(parseInt(timestamp));
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
+function formatDateTimeLocal(timestampOrIso: string): string {
+  try {
+    // Handle both numeric timestamp (seconds) and ISO string
+    let date: Date;
+    if (/^\d+$/.test(timestampOrIso)) {
+      // Numeric timestamp in seconds
+      date = new Date(parseInt(timestampOrIso) * 1000);
+    } else {
+      // ISO string
+      date = new Date(timestampOrIso);
+    }
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hours = String(date.getHours()).padStart(2, "0");
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  } catch {
+    return "";
+  }
+}
+
+function toISOString(dateTimeLocal: string): string {
+  // Convert datetime-local format to ISO string, preserving local timezone
+  if (!dateTimeLocal) return "";
+  // datetime-local is already interpreted as local time by Date constructor
+  return new Date(dateTimeLocal).toISOString();
 }
 
 function getParam(key: string, parser: (val: string) => any): any {
@@ -65,34 +86,63 @@ function getParam(key: string, parser: (val: string) => any): any {
   return value ? parser(value) : undefined;
 }
 
+function getDefaultStartTime(): string {
+  // Default to start of current day (00:00) in local timezone
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}T00:00`;
+}
+
+function getDefaultEndTime(): string {
+  // Default to end of current day (23:59) in local timezone
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}T23:59`;
+}
+
 // Component state - initialize from URL parameters
 const domain = ref<string>(getParam("domain", (v) => v) || "");
-const startTime = ref<string>(getParam("start", formatDateTimeLocal));
-const endTime = ref<string>(getParam("end", formatDateTimeLocal));
-const step = ref<number | undefined>(getParam("step", (v) => parseInt(v)));
+const startTime = ref<string>(getParam("start", formatDateTimeLocal) || getDefaultStartTime());
+const endTime = ref<string>(getParam("end", formatDateTimeLocal) || getDefaultEndTime());
+const step = ref<number | undefined>(getParam("step", (v) => parseFloat(v)));
 const loading = ref(false);
 const environmentChartData = ref<any>(null);
 const operationChartData = ref<any>(null);
 
-// Auto-fetch if domain is present
-onMounted(() => {
-  if (domain.value) fetchHistory();
-});
+// Store the default times to compare against
+const defaultStartTime = getDefaultStartTime();
+const defaultEndTime = getDefaultEndTime();
+
+// Watch for changes and update URL params
+watch([domain, startTime, endTime, step], () => {
+  updateUrlParams();
+}, { immediate: true });
+
+// Auto-fetch when domain is set and changes
+watch([domain, startTime, endTime, step], () => {
+  if (domain.value.trim()) fetchHistory();
+}, { immediate: true });
 
 function updateUrlParams(): void {
   const params = new URLSearchParams();
   if (domain.value) params.append("domain", domain.value);
-  if (startTime.value) {
-    const timestamp = new Date(startTime.value).getTime() / 1000;
+  // Skip startTime if it's the default value (start of day)
+  if (startTime.value && startTime.value !== defaultStartTime) {
+    const timestamp = Math.floor(new Date(startTime.value).getTime() / 1000);
     params.append("start", timestamp.toString());
   }
-  if (endTime.value) {
-    const timestamp = new Date(endTime.value).getTime() / 1000;
+  // Skip endTime if it's the default value (end of day)
+  if (endTime.value && endTime.value !== defaultEndTime) {
+    const timestamp = Math.floor(new Date(endTime.value).getTime() / 1000);
     params.append("end", timestamp.toString());
   }
-  if (step.value && step.value !== 60) {
+  if (step.value !== undefined)
     params.append("step", step.value.toString());
-  }
   const queryString = params.toString();
   const newUrl = queryString ? `?${queryString}` : window.location.pathname;
   window.history.replaceState({}, "", newUrl);
@@ -101,14 +151,14 @@ function updateUrlParams(): void {
 function buildApiParams(): URLSearchParams {
   const params = new URLSearchParams();
   if (startTime.value) {
-    const timestamp = new Date(startTime.value).getTime() / 1000;
+    const timestamp = Math.floor(new Date(startTime.value).getTime() / 1000);
     params.append("start", timestamp.toString());
   }
   if (endTime.value) {
-    const timestamp = new Date(endTime.value).getTime() / 1000;
+    const timestamp = Math.floor(new Date(endTime.value).getTime() / 1000);
     params.append("end", timestamp.toString());
   }
-  if (step.value) {
+  if (step.value !== undefined) {
     params.append("step", step.value.toString());
   }
   return params;
@@ -116,10 +166,8 @@ function buildApiParams(): URLSearchParams {
 
 async function fetchHistory(): Promise<void> {
   if (!domain.value.trim()) {
-    toast.error("Domain is required");
     return;
   }
-  updateUrlParams();
   toast.clear();
   loading.value = true;
   const loading_toast_id = toast.info("Loading...", { timeout: false, closeButton: false });
@@ -183,33 +231,29 @@ function hexToRgba(hex: string, alpha: number = 0.1): string {
 }
 
 function prepareChartData(dataMap: Map<string, { t: number; v: number }[]>) {
-  // Extract all unique timestamps and sort them
-  const timestampSet = new Set<number>();
-  for (const points of dataMap.values()) {
-    points.forEach((p) => timestampSet.add(p.t));
-  }
-  const timestamps = Array.from(timestampSet).sort((a, b) => a - b);
+  if (dataMap.size === 0) return;
 
-  if (timestamps.length === 0) return;
+  // Calculate max gap threshold: (step + 1 minute) in milliseconds
+  const stepMs = (step.value || 60) * 1000;
+  const maxGapMs = stepMs + 60 * 1000;
 
-  // Format labels for each data point
-  const formattedLabels: (string | string[])[] = [];
-  let lastDate = "";
-
-  for (const ts of timestamps) {
-    const date = new Date(ts);
-    const hours = date.getHours();
-    const minutes = date.getMinutes();
-    const month = date.toLocaleString("default", { month: "short" });
-    const day = date.getDate();
-    const currentDate = `${month} ${day}`;
-
-    const timeStr = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-    formattedLabels.push([timeStr, currentDate]);
-
-    if (currentDate !== lastDate) {
-      lastDate = currentDate;
+  // Helper function to insert nulls for gaps
+  function processDataWithGaps(points: { t: number; v: number }[]): { x: number; y: number | null }[] {
+    if (points.length === 0) return [];
+    const result: { x: number; y: number | null }[] = [];
+    for (let i = 0; i < points.length; i++) {
+      result.push({ x: points[i].t, y: points[i].v });
+      // Check if there's a next point and if the gap is too large
+      if (i < points.length - 1) {
+        const gap = points[i + 1].t - points[i].t;
+        if (gap > maxGapMs) {
+          // Insert null point to break the line
+          result.push({ x: points[i].t + 1, y: null });
+        }
+      }
     }
+
+    return result;
   }
 
   // Environment chart: temperature and humidity
@@ -232,9 +276,8 @@ function prepareChartData(dataMap: Map<string, { t: number; v: number }[]>) {
   for (const config of environmentConfig) {
     const points = dataMap.get(config.key);
     if (!points || points.length === 0) continue;
-    const valueMap = new Map(points.map((p) => [p.t, p.v]));
-    const data = timestamps.map((ts) => valueMap.get(ts) ?? NaN);
-    if (data.some((v) => !isNaN(v))) {
+    const data = processDataWithGaps(points);
+    if (data.length > 0) {
       environmentDatasets.push({
         type: "line",
         label: config.label,
@@ -242,14 +285,15 @@ function prepareChartData(dataMap: Map<string, { t: number; v: number }[]>) {
         borderColor: config.color,
         backgroundColor: hexToRgba(config.color, 0.1),
         yAxisID: config.yAxisID,
-        tension: 0.4,
-        spanGaps: true,
+        tension: 0,
+        spanGaps: false,
+        borderCapStyle: "round" as const,
+        borderJoinStyle: "round" as const,
       });
     }
   }
 
   environmentChartData.value = {
-    labels: formattedLabels,
     datasets: environmentDatasets,
   };
 
@@ -273,31 +317,69 @@ function prepareChartData(dataMap: Map<string, { t: number; v: number }[]>) {
   for (const config of operationConfig) {
     const points = dataMap.get(config.key);
     if (!points || points.length === 0) continue;
-    const valueMap = new Map(points.map((p) => [p.t, p.v]));
-    const data = timestamps.map((ts) => valueMap.get(ts) ?? NaN);
-    if (data.some((v) => !isNaN(v))) {
-      operationDatasets.push({
+    const data = config.key === "population"
+      ? points.map((p) => ({ x: p.t, y: p.v }))
+      : processDataWithGaps(points);
+    if (data.length > 0) {
+      const dataset: any = {
         type: config.key === "population" ? "bar" : "line",
         label: config.label,
         data,
         borderColor: config.color,
         backgroundColor: hexToRgba(config.color, config.key === "population" ? 0.7 : 0.1),
         yAxisID: config.yAxisID,
-        tension: 0.4,
-        spanGaps: true,
-      });
+        tension: 0,
+        spanGaps: false,
+        borderCapStyle: "round" as const,
+        borderJoinStyle: "round" as const,
+      };
+
+      // Set fixed bar width to 1 second (1000ms) for population
+      if (config.key === "population") {
+        dataset.barThickness = 'flex';
+        dataset.maxBarThickness = 1000; // 1 second in pixels (will be calculated by chart)
+        dataset.minBarLength = 2;
+      }
+
+      operationDatasets.push(dataset);
     }
   }
 
   operationChartData.value = {
-    labels: formattedLabels,
     datasets: operationDatasets,
   };
 }
 
+const customBarWidthPlugin = {
+  id: 'customBarWidth',
+  beforeUpdate: (chart: any) => {
+    const xScale = chart.scales.x;
+    if (!xScale) return;
+
+    // Calculate pixel width for 1 second
+    const oneSecondInMs = 1000;
+    const min = xScale.min || 0;
+    const max = xScale.max || oneSecondInMs;
+    const width = xScale.width || 1;
+    const timeRange = max - min;
+    const pixelsPerMs = width / timeRange;
+    const barWidth = oneSecondInMs * pixelsPerMs;
+
+    // Apply to bar datasets
+    chart.data.datasets.forEach((dataset: any) => {
+      if (dataset.type === 'bar') {
+        dataset.barThickness = Math.max(1, barWidth);
+        dataset.categoryPercentage = 1.0;
+        dataset.barPercentage = 1.0;
+      }
+    });
+  }
+};
+
 const createChartOptions = (yAxisTitle: string, y1AxisTitle: string) => ({
   responsive: true,
   maintainAspectRatio: false,
+  animation: false,
   interaction: {
     mode: "index" as const,
     intersect: false,
@@ -305,10 +387,14 @@ const createChartOptions = (yAxisTitle: string, y1AxisTitle: string) => ({
   plugins: {
     legend: {
       position: "top" as const,
+      align: "center" as const,
       labels: {
         color: "#fff",
         usePointStyle: true,
         padding: 10,
+        font: {
+          size: 12,
+        },
       },
     },
     tooltip: {
@@ -321,7 +407,17 @@ const createChartOptions = (yAxisTitle: string, y1AxisTitle: string) => ({
   },
   scales: {
     x: {
-      type: "category" as const,
+      type: "time" as const,
+      time: {
+        displayFormats: {
+          hour: "MMM d, HH:mm",
+          minute: "MMM d, HH:mm",
+          day: "MMM d",
+        },
+      },
+      min: startTime.value ? new Date(startTime.value).getTime() : undefined,
+      max: endTime.value ? new Date(endTime.value).getTime() : undefined,
+      offset: false,
       grid: {
         color: "#2a2a2a",
       },
@@ -365,7 +461,7 @@ const createChartOptions = (yAxisTitle: string, y1AxisTitle: string) => ({
       },
     },
   },
-});
+}) as ChartOptions;
 
 const environmentChartOptions = computed(() =>
   createChartOptions("Temperature (°C)", "Humidity (%)")
@@ -390,7 +486,7 @@ function backToDashboard(): void {
         <div class="control-group">
           <label for="domain">Domain *</label>
           <input id="domain" v-model="domain" type="text" placeholder="e.g., living-room" required
-            @keypress.enter="fetchHistory" style="width: 8ch" />
+            :class="{ 'error': !domain.trim() }" style="width: 12ch" />
         </div>
         <div class="control-group">
           <label for="start">Start Time</label>
@@ -402,11 +498,7 @@ function backToDashboard(): void {
         </div>
         <div class="control-group">
           <label for="step">Time Step (s)</label>
-          <input id="step" v-model.number="step" type="number" min="1" style="width: 8ch" />
-        </div>
-        <div class="control-group">
-          <label>&nbsp;</label>
-          <button :disabled="loading" @click="fetchHistory">Fetch Data</button>
+          <input id="step" v-model.number="step" type="number" min="1" style="width: 12ch" />
         </div>
       </div>
       <div class="chart-container">
@@ -471,6 +563,7 @@ function backToDashboard(): void {
 label {
   font-size: 0.9em;
   color: #aaa;
+  text-align: left;
 }
 
 input,
@@ -483,10 +576,18 @@ select {
   font-size: 1em;
 }
 
+input.error {
+  border-color: #ff4444;
+}
+
 input:focus,
 select:focus {
   outline: none;
   border-color: #4a9eff;
+}
+
+input.error:focus {
+  border-color: #ff4444;
 }
 
 button {
